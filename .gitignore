@@ -6,11 +6,8 @@ dist/
 *.user
 *.suo
 *.ps1
-
-# Personal machine paths - see build/Directory.Build.local.props.example
-build/Directory.Build.local.props
-
-# Generated at runtime, not source
+build/
+Tests/
 src/TCFModSync.Server/config/serverConfig.json
 **/clientConfig.json
 TCFModSync.pending.json
