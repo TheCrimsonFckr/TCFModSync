@@ -16,7 +16,7 @@ namespace TCFModSync.Client
     {
         public const string PluginGuid = "com.thecrimsonfuckr.tcfmodsync.client";
         public const string PluginName = "TCF-ModSync";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "2.0.0";
 
         private ConfigEntry<bool> _headlessAutoAccept = null!;
         private ConfigEntry<string> _relaunchTarget = null!;
