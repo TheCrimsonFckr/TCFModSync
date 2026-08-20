@@ -1,14 +1,36 @@
+# Build output
 bin/
 obj/
-.vs/
-.idea/
 dist/
-*.user
-*.suo
-*.ps1
 build/
 Tests/
+
+# IDE / editor
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.rsuser
+*.sln.docstates
+*.sln.DotSettings.user
+
+# Test output
+TestResults/
+
+# PowerShell tooling stays local
+*.ps1
+
+# Machine-specific build config only
+build/Directory.Build.local.props
+
+# Local runtime config and state
 src/TCFModSync.Server/config/serverConfig.json
 **/clientConfig.json
 TCFModSync.pending.json
-TCFModSync.Updater.log
+*.log
+
+# OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store
