@@ -1,5 +1,6 @@
 using TCFModSync.Shared.Globbing;
 using TCFModSync.Shared.Models;
+using TCFModSync.Shared.Paths;
 
 namespace TCFModSync.Shared.Diffing;
 
@@ -15,21 +16,29 @@ public sealed class DiffResult
 
 public static class DiffEngine
 {
+    // disabledPaths are files the client holds inside a ".disabled" container. They are present, so
+    // nothing is downloaded over them, and deliberately turned off, so nothing deletes them either.
     public static List<DiffResult> BuildDiff(
         Manifest manifest,
         IReadOnlyDictionary<string, string> localFileHashes,
-        ClientConfig clientConfig)
+        ClientConfig clientConfig,
+        ISet<string>? disabledPaths = null)
     {
         var results = new List<DiffResult>();
-        var serverPaths = new HashSet<string>(manifest.Files.Select(f => f.RelativePath), StringComparer.OrdinalIgnoreCase);
-        var serverExcludedPaths = new HashSet<string>(manifest.ExcludedPaths, StringComparer.OrdinalIgnoreCase);
+
+        var offeredFiles = manifest.Files.Where(f => f.Root == SptRootKind.Game).ToList();
+        var offeredPaths = new HashSet<string>(offeredFiles.Select(f => f.RelativePath), StringComparer.OrdinalIgnoreCase);
+        var excludedByServer = new HashSet<string>(manifest.ExcludedPaths, StringComparer.OrdinalIgnoreCase);
+        var disabled = disabledPaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var hasAllowList = clientConfig.IncludePatterns.Count > 0;
         var excludeMatcher = new PatternMatcher(clientConfig.ExcludePatterns);
         var includeMatcher = new PatternMatcher(clientConfig.IncludePatterns);
 
-        foreach (var entry in manifest.Files)
+        foreach (var entry in offeredFiles)
         {
+            if (disabled.Contains(entry.RelativePath)) continue;
+
             var isBlacklisted = manifest.FileHashBlacklist.Contains(entry.Hash, StringComparer.OrdinalIgnoreCase);
             var isUserExcluded = excludeMatcher.Matches(entry.RelativePath);
             var existsLocally = localFileHashes.TryGetValue(entry.RelativePath, out var localHash);
@@ -80,12 +89,13 @@ public static class DiffEngine
 
         foreach (var trackedPath in clientConfig.TrackedFiles.Keys)
         {
-            if (serverPaths.Contains(trackedPath)) continue;
+            if (offeredPaths.Contains(trackedPath)) continue;
+            if (disabled.Contains(trackedPath)) continue;
 
             var isUserExcluded = excludeMatcher.Matches(trackedPath);
             if (isUserExcluded) continue;
 
-            if (serverExcludedPaths.Contains(trackedPath))
+            if (excludedByServer.Contains(trackedPath))
             {
                 results.Add(new DiffResult { RelativePath = trackedPath, Action = FileAction.Untrack });
                 continue;

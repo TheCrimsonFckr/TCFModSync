@@ -8,6 +8,7 @@ using TCFModSync.Client.Config;
 using TCFModSync.Client.Handoff;
 using TCFModSync.Shared.Diffing;
 using TCFModSync.Shared.Models;
+using TCFModSync.Shared.Paths;
 
 namespace TCFModSync.Client.Sync
 {
@@ -38,12 +39,22 @@ namespace TCFModSync.Client.Sync
 
             _log($"[TCF-ModSync] Requesting {(IsHeadless ? "headless " : "")}manifest...");
             var manifest = await FetchManifestWithRetriesAsync(transport).ConfigureAwait(false);
-            _log($"[TCF-ModSync] Manifest received: {manifest.Files.Count} file(s) offered.");
+
+            var offeredCount = manifest.Files.Count(f => f.Root == SptRootKind.Game);
+            var reportedCount = manifest.Files.Count - offeredCount;
+            _log($"[TCF-ModSync] Manifest received: {offeredCount} file(s) offered" +
+                 (reportedCount > 0 ? $", and {reportedCount} server-side file(s) reported only." : "."));
 
             var scanner = new LocalScanner(_gameRootDirectory);
-            var localHashes = await scanner.HashKnownPathsAsync(manifest, config, _log).ConfigureAwait(false);
+            var scan = await scanner.HashKnownPathsAsync(manifest, config, _log).ConfigureAwait(false);
 
-            var diff = DiffEngine.BuildDiff(manifest, localHashes, config);
+            if (scan.DisabledPaths.Count > 0)
+            {
+                _log($"[TCF-ModSync] {scan.DisabledPaths.Count} offered file(s) are present but disabled - " +
+                     "leaving them as they are.");
+            }
+
+            var diff = DiffEngine.BuildDiff(manifest, scan.Hashes, config, scan.DisabledPaths);
             _log($"[TCF-ModSync] Diff complete: {diff.Count} action(s) proposed.");
             return (manifest, config, diff);
         }

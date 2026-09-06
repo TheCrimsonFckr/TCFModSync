@@ -62,10 +62,15 @@ namespace TCFModSync.Client
                 "detected automatically, so this is only needed to force the behaviour on a client " +
                 "that isn't detected as one.");
 
-            _gameRootDirectory = SptRootLocator.FindRoot(pluginDir)
-                                 ?? throw new InvalidOperationException(
-                                     $"Could not locate the game root above '{pluginDir}'. Expected a folder " +
-                                     "containing EscapeFromTarkov.exe.");
+            var gameRoot = SptRootResolver.ResolveGameRoot(pluginDir);
+            if (!gameRoot.Found)
+            {
+                throw new InvalidOperationException(
+                    $"Could not locate the game root above '{pluginDir}'. Expected a folder containing " +
+                    "EscapeFromTarkov.exe or BepInEx.");
+            }
+
+            _gameRootDirectory = gameRoot.Directory!;
             _clientConfigPath = Path.Combine(pluginDir, "clientConfig.json");
 
             _relaunchTarget = Config.Bind("Behaviour", "RelaunchTarget", "None",
