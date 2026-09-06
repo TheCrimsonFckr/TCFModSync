@@ -6,7 +6,6 @@ using SPTarkov.Server.Core.Servers;
 using TCFModSync.Server.Config;
 using TCFModSync.Server.Http;
 using TCFModSync.Server.Sync;
-using TCFModSync.Shared.Globbing;
 using TCFModSync.Shared.Logging;
 using TCFModSync.Shared.Paths;
 
@@ -20,7 +19,8 @@ public class ModEntry : IOnLoad
     private readonly ManifestBuilder _manifestBuilder = new();
 
     private TCFModSync.Shared.Models.ServerConfig? _config;
-    private string _sptRootDirectory = "";
+    private string _gameRootDirectory = "";
+    private string? _serverRootDirectory;
     private FileLog? _fileLog;
 
     public ModEntry(ISptLogger<ModEntry> logger)
@@ -55,6 +55,23 @@ public class ModEntry : IOnLoad
         _fileLog?.Write(message);
     }
 
+    private static string Describe(SptRootResult result)
+    {
+        var name = result.Kind == SptRootKind.Game ? "game root" : "server root";
+        var setting = result.Kind == SptRootKind.Game ? "GameRootDirectory" : "ServerRootDirectory";
+
+        return result.Problem switch
+        {
+            SptRootProblem.ConfiguredDirectoryMissing =>
+                $"{setting} in serverConfig.json points at '{result.ConfiguredDirectory}', which does not exist.",
+            SptRootProblem.StartDirectoryMissing =>
+                $"Could not look for the {name}: '{result.StartDirectory}' does not exist.",
+            _ =>
+                $"Could not auto-detect the {name} above '{result.StartDirectory}'. " +
+                $"Set {setting} in serverConfig.json to the folder you want to serve from."
+        };
+    }
+
     public Task OnLoad()
     {
         try
@@ -82,55 +99,74 @@ public class ModEntry : IOnLoad
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(_config.SptRootDirectory))
+            var gameRoot = SptRootResolver.ResolveGameRoot(modDirectory, _config.EffectiveGameRootDirectory);
+            if (!gameRoot.Found)
             {
-                _sptRootDirectory = Path.GetFullPath(_config.SptRootDirectory);
-                if (!Directory.Exists(_sptRootDirectory))
-                {
-                    throw new DirectoryNotFoundException(
-                        $"SptRootDirectory in serverConfig.json points at '{_sptRootDirectory}', which does not exist.");
-                }
-
-                if (_config.VerboseLogging)
-                    LogInfo($"[TCF-ModSync] Root set explicitly to '{_sptRootDirectory}'.");
+                throw new InvalidOperationException($"[TCF-ModSync] {Describe(gameRoot)}");
             }
-            else
-            {
-                _sptRootDirectory = SptRootLocator.FindRoot(modDirectory)
-                                    ?? throw new InvalidOperationException(
-                                        $"Could not auto-detect the SPT root above '{modDirectory}'. " +
-                                        "Set SptRootDirectory in serverConfig.json to the folder you want to serve from.");
 
-                if (_config.VerboseLogging)
-                    LogInfo($"[TCF-ModSync] Root auto-detected as '{_sptRootDirectory}'.");
+            _gameRootDirectory = gameRoot.Directory!;
+
+            var serverRoot = SptRootResolver.ResolveServerRoot(modDirectory, _config.ServerRootDirectory);
+            if (serverRoot.Found)
+            {
+                _serverRootDirectory = serverRoot.Directory;
+            }
+            else if (_config.ServerIncludePatterns.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"[TCF-ModSync] ServerIncludePatterns is set but the server root could not be resolved. " +
+                    Describe(serverRoot));
+            }
+            else if (_config.VerboseLogging)
+            {
+                LogInfo($"[TCF-ModSync] No server root resolved, and no server patterns are set. " +
+                        Describe(serverRoot));
             }
 
             if (_config.VerboseLogging)
             {
+                LogInfo($"[TCF-ModSync] Game root: '{_gameRootDirectory}'.");
+                LogInfo($"[TCF-ModSync] Server root: '{_serverRootDirectory ?? "(none)"}'" +
+                        (serverRoot.ServerExePath != null ? $", from '{serverRoot.ServerExePath}'." : "."));
                 LogInfo($"[TCF-ModSync] Include patterns: {string.Join(", ", _config.IncludePatterns)}");
                 LogInfo($"[TCF-ModSync] Exclude patterns: {string.Join(", ", _config.ExcludePatterns)}");
+                LogInfo($"[TCF-ModSync] Server include patterns: {string.Join(", ", _config.ServerIncludePatterns)}");
             }
 
             SptRouteListener.Handler = new SyncRequestHandler(
-                _sptRootDirectory, _config, _manifestBuilder, msg => LogInfo($"[TCF-ModSync] {msg}"));
+                _gameRootDirectory, _serverRootDirectory, _config, _manifestBuilder,
+                msg => LogInfo($"[TCF-ModSync] {msg}"));
 
-            var fileCount = GlobMatcher
-                .ResolveIncludedFiles(_sptRootDirectory, _config.IncludePatterns, _config.ExcludePatterns)
-                .Count;
+            var gameCount = ManifestBuilder.ResolveGamePaths(_gameRootDirectory, _config, false, out _).Count;
+            var serverCount = ManifestBuilder.ResolveServerPaths(_serverRootDirectory, _config).Count;
 
-            if (fileCount == 0)
+            if (gameCount == 0)
             {
                 LogWarning(
-                    $"[TCF-ModSync] Manifest is EMPTY - scanned '{_sptRootDirectory}' and no file matched " +
+                    $"[TCF-ModSync] Manifest is EMPTY - scanned '{_gameRootDirectory}' and no file matched " +
                     "the include patterns (or everything matched was excluded).");
 
-                foreach (var line in _manifestBuilder.DiagnoseEmptyScan(_sptRootDirectory, _config))
+                foreach (var line in _manifestBuilder.Diagnose(_gameRootDirectory, _config.IncludePatterns))
                 {
                     LogWarning($"[TCF-ModSync] {line}");
                 }
             }
 
-            LogSuccess($"[TCF-ModSync] Ready - sharing {fileCount} file(s) on the SPT server's own port.");
+            if (serverCount == 0 && _config.ServerIncludePatterns.Count > 0)
+            {
+                LogWarning(
+                    $"[TCF-ModSync] No server file matched - scanned '{_serverRootDirectory}'.");
+
+                foreach (var line in _manifestBuilder.Diagnose(_serverRootDirectory!, _config.ServerIncludePatterns))
+                {
+                    LogWarning($"[TCF-ModSync] {line}");
+                }
+            }
+
+            LogSuccess(
+                $"[TCF-ModSync] Ready - sharing {gameCount} game file(s) and reporting {serverCount} " +
+                "server file(s) on the SPT server's own port.");
         }
         catch (Exception ex)
         {

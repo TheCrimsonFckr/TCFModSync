@@ -1,6 +1,7 @@
 using TCFModSync.Shared.Globbing;
 using TCFModSync.Shared.Hashing;
 using TCFModSync.Shared.Models;
+using TCFModSync.Shared.Paths;
 
 namespace TCFModSync.Server.Sync;
 
@@ -16,11 +17,11 @@ public sealed class ManifestBuilder
     private readonly Dictionary<string, CachedHash> _hashCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _cacheLock = new();
 
-    private string GetHash(string relativePath, string absolutePath, FileInfo info)
+    private string GetHash(string cacheKey, string absolutePath, FileInfo info)
     {
         lock (_cacheLock)
         {
-            if (_hashCache.TryGetValue(relativePath, out var cached)
+            if (_hashCache.TryGetValue(cacheKey, out var cached)
                 && cached.Size == info.Length
                 && cached.LastWriteUtc == info.LastWriteTimeUtc)
             {
@@ -32,7 +33,7 @@ public sealed class ManifestBuilder
 
         lock (_cacheLock)
         {
-            _hashCache[relativePath] = new CachedHash
+            _hashCache[cacheKey] = new CachedHash
             {
                 Size = info.Length,
                 LastWriteUtc = info.LastWriteTimeUtc,
@@ -43,18 +44,18 @@ public sealed class ManifestBuilder
         return hash;
     }
 
-    public List<string> DiagnoseEmptyScan(string sptRootDirectory, ServerConfig config)
+    public List<string> Diagnose(string rootDirectory, IEnumerable<string> includePatterns)
     {
         var lines = new List<string>();
 
-        foreach (var pattern in config.IncludePatterns)
+        foreach (var pattern in includePatterns)
         {
             var normalized = pattern.Replace('\\', '/');
             var wildcardAt = normalized.IndexOfAny(new[] { '*', '?' });
 
             if (wildcardAt < 0)
             {
-                var literalPath = Path.Combine(sptRootDirectory, normalized.Replace('/', Path.DirectorySeparatorChar));
+                var literalPath = SptPaths.Combine(rootDirectory, normalized);
                 lines.Add(File.Exists(literalPath)
                     ? $"  '{pattern}' -> file exists"
                     : $"  '{pattern}' -> FILE NOT FOUND at {literalPath}");
@@ -64,8 +65,8 @@ public sealed class ManifestBuilder
             var lastSlash = normalized.LastIndexOf('/', Math.Max(wildcardAt - 1, 0));
             var prefix = lastSlash > 0 ? normalized.Substring(0, lastSlash) : "";
             var prefixPath = string.IsNullOrEmpty(prefix)
-                ? sptRootDirectory
-                : Path.Combine(sptRootDirectory, prefix.Replace('/', Path.DirectorySeparatorChar));
+                ? rootDirectory
+                : SptPaths.Combine(rootDirectory, prefix);
 
             if (!Directory.Exists(prefixPath))
             {
@@ -82,50 +83,67 @@ public sealed class ManifestBuilder
         return lines;
     }
 
-    public Manifest Build(string sptRootDirectory, ServerConfig config, string sptVersion, bool headless = false)
+    // Game-root paths offered to clients, after exclusions and the headless narrowing.
+    public static List<string> ResolveGamePaths(string gameRootDirectory, ServerConfig config, bool headless,
+        out List<string> excludedPaths)
     {
         var candidatePaths = GlobMatcher.ResolveIncludedFiles(
-            sptRootDirectory, config.IncludePatterns, Enumerable.Empty<string>());
+            gameRootDirectory, config.IncludePatterns, Enumerable.Empty<string>());
 
         var relativePaths = GlobMatcher.FilterOutExcluded(candidatePaths, config.ExcludePatterns);
 
-        var excludedPaths = candidatePaths
+        excludedPaths = candidatePaths
             .Except(relativePaths, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        if (headless)
+        if (!headless) return relativePaths;
+
+        var headlessIncludeMatcher = new PatternMatcher(config.HeadlessIncludePatterns);
+        var headlessExcludeMatcher = new PatternMatcher(config.HeadlessExcludePatterns);
+
+        var beforeHeadlessFilter = relativePaths;
+        relativePaths = beforeHeadlessFilter
+            .Where(path => headlessIncludeMatcher.Matches(path))
+            .Where(path => !headlessExcludeMatcher.Matches(path))
+            .ToList();
+
+        var droppedByHeadlessFilter = beforeHeadlessFilter
+            .Except(relativePaths, StringComparer.OrdinalIgnoreCase);
+
+        excludedPaths = excludedPaths
+            .Concat(droppedByHeadlessFilter)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return relativePaths;
+    }
+
+    // Server-root paths. Empty whenever no server root was resolved or nothing opted in.
+    public static List<string> ResolveServerPaths(string? serverRootDirectory, ServerConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(serverRootDirectory)) return new List<string>();
+        if (config.ServerIncludePatterns.Count == 0) return new List<string>();
+        if (!Directory.Exists(serverRootDirectory)) return new List<string>();
+
+        var candidates = GlobMatcher.ResolveIncludedFiles(
+            serverRootDirectory!, config.ServerIncludePatterns, Enumerable.Empty<string>());
+
+        return GlobMatcher.FilterOutExcluded(candidates, config.ServerExcludePatterns);
+    }
+
+    public Manifest Build(string gameRootDirectory, string? serverRootDirectory, ServerConfig config,
+        string sptVersion, bool headless = false)
+    {
+        var gamePaths = ResolveGamePaths(gameRootDirectory, config, headless, out var excludedPaths);
+        var serverPaths = ResolveServerPaths(serverRootDirectory, config);
+
+        var files = new List<ManifestEntry>(gamePaths.Count + serverPaths.Count);
+
+        AddEntries(files, SptRootKind.Game, gameRootDirectory, gamePaths);
+
+        if (serverPaths.Count > 0)
         {
-            var headlessIncludeMatcher = new PatternMatcher(config.HeadlessIncludePatterns);
-            var headlessExcludeMatcher = new PatternMatcher(config.HeadlessExcludePatterns);
-
-            var beforeHeadlessFilter = relativePaths;
-            relativePaths = beforeHeadlessFilter
-                .Where(path => headlessIncludeMatcher.Matches(path))
-                .Where(path => !headlessExcludeMatcher.Matches(path))
-                .ToList();
-
-            var droppedByHeadlessFilter = beforeHeadlessFilter
-                .Except(relativePaths, StringComparer.OrdinalIgnoreCase);
-
-            excludedPaths = excludedPaths
-                .Concat(droppedByHeadlessFilter)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
-        var files = new List<ManifestEntry>(relativePaths.Count);
-        foreach (var relativePath in relativePaths)
-        {
-            var absolutePath = Path.Combine(sptRootDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
-            var info = new FileInfo(absolutePath);
-            if (!info.Exists) continue;
-
-            files.Add(new ManifestEntry
-            {
-                RelativePath = relativePath,
-                Size = info.Length,
-                Hash = GetHash(relativePath, absolutePath, info)
-            });
+            AddEntries(files, SptRootKind.Server, serverRootDirectory!, serverPaths);
         }
 
         return new Manifest
@@ -136,5 +154,24 @@ public sealed class ManifestBuilder
             ExcludedPaths = excludedPaths,
             SptVersion = sptVersion
         };
+    }
+
+    private void AddEntries(List<ManifestEntry> files, SptRootKind root, string rootDirectory,
+        List<string> relativePaths)
+    {
+        foreach (var relativePath in relativePaths)
+        {
+            var absolutePath = SptPaths.Combine(rootDirectory, relativePath);
+            var info = new FileInfo(absolutePath);
+            if (!info.Exists) continue;
+
+            files.Add(new ManifestEntry
+            {
+                RelativePath = relativePath,
+                Root = root,
+                Size = info.Length,
+                Hash = GetHash($"{root}:{relativePath}", absolutePath, info)
+            });
+        }
     }
 }
