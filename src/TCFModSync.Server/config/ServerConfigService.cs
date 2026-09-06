@@ -59,6 +59,7 @@ public sealed class ServerConfigService
     private static void ValidatePatterns(ServerConfig config)
     {
         var bad = config.IncludePatterns.Concat(config.ExcludePatterns)
+            .Concat(config.ServerIncludePatterns).Concat(config.ServerExcludePatterns)
             .Concat(config.HeadlessIncludePatterns).Concat(config.HeadlessExcludePatterns)
             .Where(p => !GlobMatcher.IsSafeRelativePattern(p))
             .ToList();
@@ -67,7 +68,7 @@ public sealed class ServerConfigService
         {
             throw new InvalidOperationException(
                 "serverConfig.json contains unsafe path pattern(s): " + string.Join(", ", bad) +
-                ". Patterns must be relative to the SPT root and cannot contain '..' or a drive letter.");
+                ". Patterns must be relative to their root and cannot contain '..' or a drive letter.");
         }
     }
 }

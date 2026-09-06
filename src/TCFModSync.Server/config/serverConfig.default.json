@@ -1,5 +1,5 @@
 {
-  "ConfigVersion": "1.0.0",
+  "ConfigVersion": "1.1.0",
   "IncludePatterns": [
     "TCFModSync.Updater.exe",
     "hostfxr.dll",
@@ -17,6 +17,10 @@
     "BepInEx/plugins/spt/**/*",
     "BepInEx/plugins/DynamicMaps/**/*"
   ],
+  "ServerIncludePatterns": [],
+  "ServerExcludePatterns": [
+    "**/*.log"
+  ],
   "FileHashBlacklist": [],
   "HeadlessIncludePatterns": [
     "BepInEx/patchers/**/*"
@@ -24,7 +28,8 @@
   "HeadlessExcludePatterns": [
     "BepInEx/plugins/Fika/**/*"
   ],
-  "SptRootDirectory": "",
+  "GameRootDirectory": "",
+  "ServerRootDirectory": "",
   "VerboseLogging": false,
   "SptVersion": "4.0.13 - 2891fd"
 }
